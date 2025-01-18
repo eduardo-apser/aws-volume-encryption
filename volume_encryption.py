@@ -134,53 +134,42 @@ def main(argv):
             sys.exit('ERROR: {}'.format(e))
 
         """ Step 3: Create encrypted volume """
-        print('---Create encrypted copy of snapshot')
-        if customer_master_key:
-            # Use custom key
-            snapshot_encrypted_dict = snapshot.copy(
-                Description='Encrypted copy of snapshot #{}'
-                            .format(snapshot.id),
-                Encrypted=True,
-                KmsKeyId=customer_master_key,
-                SourceRegion=args.region,
-            )
-        else:
-            # Use default key
-            snapshot_encrypted_dict = snapshot.copy(
-                Description='Encrypted copy of snapshot ({})'
-                            .format(snapshot.id),
-                Encrypted=True,
-                SourceRegion=args.region,
-            )
-
-        snapshot_encrypted = ec2.Snapshot(snapshot_encrypted_dict['SnapshotId'])
-
-        try:
-            waiter_snapshot_complete.wait(
-                SnapshotIds=[
-                    snapshot_encrypted.id,
-                ],
-            )
-        except botocore.exceptions.WaiterError as e:
-            snapshot.delete()
-            snapshot_encrypted.delete()
-            sys.exit('ERROR: {}'.format(e))
-
         print('---Create encrypted volume from snapshot')
 
-        if volume.volume_type == 'io1':
-            volume_encrypted = ec2.create_volume(
-                AvailabilityZone=instance.placement['AvailabilityZone'],
-                Iops=volume.iops,
-                SnapshotId=snapshot_encrypted.id,
-                VolumeType=volume.volume_type,
-            )
+        if customer_master_key:
+            if volume.volume_type == 'io1':
+                volume_encrypted = ec2.create_volume(
+                    AvailabilityZone=instance.placement['AvailabilityZone'],
+                    Encrypted=True,
+                    Iops=volume.iops,
+                    KmsKeyId=customer_master_key,
+                    SnapshotId=snapshot.id,
+                    VolumeType=volume.volume_type,
+                )
+            else:
+                volume_encrypted = ec2.create_volume(
+                    AvailabilityZone=instance.placement['AvailabilityZone'],
+                    Encrypted=True,
+                    KmsKeyId=customer_master_key,
+                    SnapshotId=snapshot.id,
+                    VolumeType=volume.volume_type,
+                )
         else:
-            volume_encrypted = ec2.create_volume(
-                AvailabilityZone=instance.placement['AvailabilityZone'],
-                SnapshotId=snapshot_encrypted.id,
-                VolumeType=volume.volume_type,
-            )
+            if volume.volume_type == 'io1':
+                volume_encrypted = ec2.create_volume(
+                    AvailabilityZone=instance.placement['AvailabilityZone'],
+                    Encrypted=True,
+                    Iops=volume.iops,
+                    SnapshotId=snapshot.id,
+                    VolumeType=volume.volume_type,
+                )
+            else:
+                volume_encrypted = ec2.create_volume(
+                    AvailabilityZone=instance.placement['AvailabilityZone'],
+                    Encrypted=True,
+                    SnapshotId=snapshot.id,
+                    VolumeType=volume.volume_type,
+                )
 
         # Add original tags to new volume
         if volume.tags:
@@ -203,7 +192,6 @@ def main(argv):
             )
         except botocore.exceptions.WaiterError as e:
             snapshot.delete()
-            snapshot_encrypted.delete()
             volume_encrypted.delete()
             sys.exit('ERROR: {}'.format(e))
 
@@ -213,7 +201,6 @@ def main(argv):
         )
 
         current_volume_data['snapshot'] = snapshot
-        current_volume_data['snapshot_encrypted'] = snapshot_encrypted
         volume_data.append(current_volume_data)
 
     for bdm in volume_data:
@@ -246,8 +233,6 @@ def main(argv):
     for cleanup in volume_data:
         print('---Remove snapshot {}'.format(cleanup['snapshot'].id))
         cleanup['snapshot'].delete()
-        print('---Remove encrypted snapshot {}'.format(cleanup['snapshot_encrypted'].id))
-        cleanup['snapshot_encrypted'].delete()
         print('---Remove original volume {}'.format(cleanup['volume'].id))
         cleanup['volume'].delete()
 
