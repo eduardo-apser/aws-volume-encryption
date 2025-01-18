@@ -5,9 +5,9 @@ Overview:
     Iterate through each attached volume and encrypt it for EC2.
 Params:
     ID for EC2 instance
-    Customer Master Key (CMK) (optional)
+    KMS key ID
 Conditions:
-    Return if volume already encrypted
+    Return if volumes are already encrypted with the provided key
 """
 
 import argparse
@@ -15,21 +15,58 @@ import sys
 
 import boto3
 import botocore
+import re
+
+
+def list_all(client, method, type, **kwargs):
+    results = []
+    paginator = client.get_paginator(method)
+    page_iterator = paginator.paginate(**kwargs)
+    for page in page_iterator:
+        results += page[type]
+    return results
+
+
+def get_kms_key_arn(session, kms_key_id):
+    kms_client = session.client('kms')
+    pattern = re.compile(r'^arn:([^:]+):kms:([^:]*):([^:]*):((key|alias)/([^:]+))$')
+    match = pattern.match(kms_key_id)
+    if match:
+        resource_name = match.group(4)
+        if resource_name.startswith('alias'):
+            alias = list_all(kms_client, 'list_aliases', 'Aliases')
+            for alias in alias:
+                if alias['AliasName'] == resource_name:
+                    return f'arn:{match.group(1)}:kms:{match.group(2)}:{match.group(3)}:key/{alias["TargetKeyId"]}'
+        else:
+            keys = list_all(kms_client, 'list_keys', 'Keys')
+            for key in keys:
+                if key['KeyArn'] == kms_key_id:
+                    return kms_key_id
+    elif kms_key_id.startswith('alias/'):
+        alias = list_all(kms_client, 'list_aliases', 'Aliases')
+        for alias in alias:
+            if alias['AliasName'] == kms_key_id:
+                return alias['AliasArn'].replace(kms_key_id, f'key/{alias["TargetKeyId"]}')
+    else:
+        keys = list_all(kms_client, 'list_keys', 'Keys')
+        for key in keys:
+            if key['KeyId'] == kms_key_id:
+                return key['KeyArn']
+    return None
 
 
 def main(argv):
     parser = argparse.ArgumentParser(description='Encrypts EC2 root volume.')
-    parser.add_argument('-i', '--instance',
-                        help='Instance to encrypt volume on.', required=True)
-    parser.add_argument('-key', '--customer_master_key',
-                        help='Customer master key', required=False)
+    parser.add_argument('-i', '--instance', help='Instance to encrypt volume on.', required=True)
+    parser.add_argument('-k', '--kms_key_id', help='KMS key', required=True)
     args = parser.parse_args()
 
     """ Set up AWS Session + Client + Resources + Waiters """
     session = boto3.session.Session()
 
-    # Get CMK
-    customer_master_key = args.customer_master_key
+    # Determine KMS key ARN
+    kms_key_arn = get_kms_key_arn(session, args.kms_key_id)
 
     client = session.client('ec2')
     ec2 = session.resource('ec2')
@@ -69,7 +106,9 @@ def main(argv):
     volume_data = []
 
     print('---Preparing instance')
-    """ Get volume and exit if already encrypted """
+    """ Get volume and exit if already encrypted with the provided KMS key """
+
+    has_volumes_to_encrypt = False
     volumes = [v for v in instance.volumes.all()]
     for volume in volumes:
         volume_encrypted = volume.encrypted
@@ -83,10 +122,13 @@ def main(argv):
                     'volume': volume,
                 }
 
-        if volume_encrypted:
-            sys.exit(
-                '**Volume ({}) is already encrypted'
-                .format(volume.id))
+        if volume_encrypted and volume.kms_key_id == kms_key_arn:
+            print(
+                '**Volume ({}) is already encrypted with KMS key ({})'
+                .format(volume.id, kms_key_arn))
+            continue
+        else:
+            has_volumes_to_encrypt = True
 
         """ Step 1: Prepare instance """
 
@@ -136,40 +178,23 @@ def main(argv):
         """ Step 3: Create encrypted volume """
         print('---Create encrypted volume from snapshot')
 
-        if customer_master_key:
-            if volume.volume_type == 'io1':
-                volume_encrypted = ec2.create_volume(
-                    AvailabilityZone=instance.placement['AvailabilityZone'],
-                    Encrypted=True,
-                    Iops=volume.iops,
-                    KmsKeyId=customer_master_key,
-                    SnapshotId=snapshot.id,
-                    VolumeType=volume.volume_type,
-                )
-            else:
-                volume_encrypted = ec2.create_volume(
-                    AvailabilityZone=instance.placement['AvailabilityZone'],
-                    Encrypted=True,
-                    KmsKeyId=customer_master_key,
-                    SnapshotId=snapshot.id,
-                    VolumeType=volume.volume_type,
-                )
+        if volume.volume_type == 'io1':
+            volume_encrypted = ec2.create_volume(
+                AvailabilityZone=instance.placement['AvailabilityZone'],
+                Encrypted=True,
+                Iops=volume.iops,
+                KmsKeyId=kms_key_arn,
+                SnapshotId=snapshot.id,
+                VolumeType=volume.volume_type,
+            )
         else:
-            if volume.volume_type == 'io1':
-                volume_encrypted = ec2.create_volume(
-                    AvailabilityZone=instance.placement['AvailabilityZone'],
-                    Encrypted=True,
-                    Iops=volume.iops,
-                    SnapshotId=snapshot.id,
-                    VolumeType=volume.volume_type,
-                )
-            else:
-                volume_encrypted = ec2.create_volume(
-                    AvailabilityZone=instance.placement['AvailabilityZone'],
-                    Encrypted=True,
-                    SnapshotId=snapshot.id,
-                    VolumeType=volume.volume_type,
-                )
+            volume_encrypted = ec2.create_volume(
+                AvailabilityZone=instance.placement['AvailabilityZone'],
+                Encrypted=True,
+                KmsKeyId=kms_key_arn,
+                SnapshotId=snapshot.id,
+                VolumeType=volume.volume_type,
+            )
 
         # Add original tags to new volume
         if volume.tags:
@@ -216,25 +241,27 @@ def main(argv):
                 },
             ],
         )
-    """ Step 6: Start instance """
-    print('---Start instance')
-    instance.start()
-    try:
-        waiter_instance_running.wait(
-            InstanceIds=[
-                instance_id,
-            ]
-        )
-    except botocore.exceptions.WaiterError as e:
-        sys.exit('ERROR: {}'.format(e))
 
-    """ Step 7: Clean up """
-    print('---Clean up resources')
-    for cleanup in volume_data:
-        print('---Remove snapshot {}'.format(cleanup['snapshot'].id))
-        cleanup['snapshot'].delete()
-        print('---Remove original volume {}'.format(cleanup['volume'].id))
-        cleanup['volume'].delete()
+    if has_volumes_to_encrypt:
+        """ Step 6: Start instance """
+        print('---Start instance')
+        instance.start()
+        try:
+            waiter_instance_running.wait(
+                InstanceIds=[
+                    instance_id,
+                ]
+            )
+        except botocore.exceptions.WaiterError as e:
+            sys.exit('ERROR: {}'.format(e))
+
+        """ Step 7: Clean up """
+        print('---Clean up resources')
+        for cleanup in volume_data:
+            print('---Remove snapshot {}'.format(cleanup['snapshot'].id))
+            cleanup['snapshot'].delete()
+            print('---Remove original volume {}'.format(cleanup['volume'].id))
+            cleanup['volume'].delete()
 
     print('Encryption finished')
 
