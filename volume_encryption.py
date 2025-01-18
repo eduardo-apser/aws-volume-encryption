@@ -6,10 +6,8 @@ Overview:
 Params:
     ID for EC2 instance
     Customer Master Key (CMK) (optional)
-    Profile to use
 Conditions:
     Return if volume already encrypted
-    Use named profiles from credentials file
 """
 
 import argparse
@@ -25,20 +23,10 @@ def main(argv):
                         help='Instance to encrypt volume on.', required=True)
     parser.add_argument('-key', '--customer_master_key',
                         help='Customer master key', required=False)
-    parser.add_argument('-p', '--profile',
-                        help='Profile to use', required=False)
-    parser.add_argument('-r', '--region',
-                        help='Region of source volume', required=True)
     args = parser.parse_args()
 
     """ Set up AWS Session + Client + Resources + Waiters """
-    if args.profile:
-        # Create custom session
-        print('Using profile {}'.format(args.profile))
-        session = boto3.session.Session(profile_name=args.profile)
-    else:
-        # Use default session
-        session = boto3.session.Session()
+    session = boto3.session.Session()
 
     # Get CMK
     customer_master_key = args.customer_master_key
