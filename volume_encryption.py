@@ -200,7 +200,28 @@ def main(argv):
 
         # Add original tags to new volume
         if volume.tags:
-            volume_encrypted.create_tags(Tags=volume.tags)
+            volume_encrypted.create_tags(Tags=[t for t in volume.tags if not t.get(
+                'Key').startswith('VolumeEncryptionMetadata:')])
+
+        # Add additional metadata tags to original volumes for traceability
+        metadata_tags = [
+            {
+                'Key': 'VolumeEncryptionMetadata:DeviceName',
+                'Value': current_volume_data['DeviceName']
+            },
+            {
+                'Key': 'VolumeEncryptionMetadata:InstanceId',
+                'Value': instance_id
+            }
+        ]
+        for t in instance.tags:
+            if t['Key'] == 'Name':
+                metadata_tags.append({
+                    'Key': 'VolumeEncryptionMetadata:InstanceName',
+                    'Value': t['Value']
+                })
+                break
+        volume.create_tags(Tags=metadata_tags)
 
         """ Step 4: Detach current volume """
         print('---Detach volume {}'.format(volume.id))
