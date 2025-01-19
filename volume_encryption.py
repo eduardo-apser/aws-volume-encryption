@@ -11,11 +11,12 @@ Conditions:
 """
 
 import argparse
+import re
 import sys
+from datetime import datetime
 
 import boto3
 import botocore
-import re
 
 
 def list_all(client, method, type, **kwargs):
@@ -57,8 +58,8 @@ def get_kms_key_arn(session, kms_key_id):
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(description='Encrypts EC2 root volume.')
-    parser.add_argument('-i', '--instance', help='Instance to encrypt volume on.', required=True)
+    parser = argparse.ArgumentParser(description='Encrypts EBS volumes of an EC2 instance.')
+    parser.add_argument('-i', '--instance', help='EC2 instance ID', required=True)
     parser.add_argument('-k', '--kms_key_id', help='KMS key', required=True)
     parser.add_argument('-p', '--preserve_volumes', help='Preserve original volumes',
                         required=False, action='store_false')
@@ -81,7 +82,7 @@ def main(argv):
 
     """ Check instance exists """
     instance_id = args.instance
-    print('---Checking instance ({})'.format(instance_id))
+    print('[{}] Checking instance {}'.format(datetime.now().astimezone().isoformat(), instance_id))
     instance = ec2.Instance(instance_id)
 
     try:
@@ -107,7 +108,6 @@ def main(argv):
 
     volume_data = []
 
-    print('---Preparing instance')
     """ Get volume and exit if already encrypted with the provided KMS key """
 
     has_volumes_to_encrypt = False
@@ -125,9 +125,8 @@ def main(argv):
                 }
 
         if volume_encrypted and volume.kms_key_id == kms_key_arn:
-            print(
-                '**Volume ({}) is already encrypted with KMS key ({})'
-                .format(volume.id, kms_key_arn))
+            print('[{}] Volume {} is already encrypted with KMS key {}'.format(
+                datetime.now().astimezone().isoformat(), volume.id, kms_key_arn))
             continue
         else:
             has_volumes_to_encrypt = True
@@ -144,6 +143,7 @@ def main(argv):
 
         # Validate successful shutdown if it is running or stopping
         if instance.state['Code'] == 16:
+            print('[{}] Stopping instance {}'.format(datetime.now().astimezone().isoformat(), instance_id))
             instance.stop()
 
         # Set the max_attempts for this waiter (default 40)
@@ -159,9 +159,10 @@ def main(argv):
             sys.exit('ERROR: {}'.format(e))
 
         """ Step 2: Take snapshot of volume """
-        print('---Create snapshot of volume ({})'.format(volume.id))
+        print('[{}] Create snapshot of volume {} ({})'.format(
+            datetime.now().astimezone().isoformat(), volume.id, current_volume_data['DeviceName']))
         snapshot = ec2.create_snapshot(
-            Description='Snapshot of volume ({})'.format(volume.id),
+            Description='Snapshot of volume {}'.format(volume.id),
             VolumeId=volume.id,
         )
 
@@ -178,7 +179,8 @@ def main(argv):
             sys.exit('ERROR: {}'.format(e))
 
         """ Step 3: Create encrypted volume """
-        print('---Create encrypted volume from snapshot')
+        print('[{}] Create encrypted volume from snapshot {}'.format(
+            datetime.now().astimezone().isoformat(), snapshot.id))
 
         if volume.volume_type == 'io1':
             volume_encrypted = ec2.create_volume(
@@ -224,14 +226,16 @@ def main(argv):
         volume.create_tags(Tags=metadata_tags)
 
         """ Step 4: Detach current volume """
-        print('---Detach volume {}'.format(volume.id))
+        print('[{}] Detach volume {} ({})'.format(datetime.now().astimezone(
+        ).isoformat(), volume.id, current_volume_data['DeviceName']))
         instance.detach_volume(
             Device=current_volume_data['DeviceName'],
             VolumeId=volume.id,
         )
 
         """ Step 5: Attach new encrypted volume """
-        print('---Attach volume {}'.format(volume_encrypted.id))
+        print('[{}] Attach volume {} ({})'.format(datetime.now().astimezone().isoformat(),
+              volume_encrypted.id, current_volume_data['DeviceName']))
         try:
             waiter_volume_available.wait(
                 VolumeIds=[
@@ -267,7 +271,7 @@ def main(argv):
 
     if has_volumes_to_encrypt:
         """ Step 6: Start instance """
-        print('---Start instance')
+        print('[{}] Start instance {}'.format(datetime.now().astimezone().isoformat(), instance.id))
         instance.start()
         try:
             waiter_instance_running.wait(
@@ -279,17 +283,19 @@ def main(argv):
             sys.exit('ERROR: {}'.format(e))
 
         """ Step 7: Clean up """
-        print('---Clean up resources')
+        print('[{}] Clean up resources'.format(datetime.now().astimezone().isoformat()))
         for cleanup in volume_data:
-            print('---Delete snapshot {}'.format(cleanup['snapshot'].id))
+            print('[{}] Delete snapshot {}'.format(datetime.now().astimezone().isoformat(), cleanup['snapshot'].id))
             cleanup['snapshot'].delete()
             if not args.preserve_volumes:
-                print('---Skipping deletion of original volume {}'.format(cleanup['volume'].id))
+                print('[{}] Skipping deletion of original volume {} ({})'.format(
+                    datetime.now().astimezone().isoformat(), cleanup['volume'].id, cleanup['DeviceName']))
             else:
-                print('---Delete original volume {}'.format(cleanup['volume'].id))
+                print('[{}] Delete original volume {} ({})'.format(
+                    datetime.now().astimezone().isoformat(), cleanup['volume'].id, cleanup['DeviceName']))
                 cleanup['volume'].delete()
 
-    print('Encryption finished')
+    print('[{}] Encryption finished'.format(datetime.now().astimezone().isoformat()))
 
 
 if __name__ == "__main__":
