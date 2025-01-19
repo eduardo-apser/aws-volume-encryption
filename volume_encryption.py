@@ -60,6 +60,8 @@ def main(argv):
     parser = argparse.ArgumentParser(description='Encrypts EC2 root volume.')
     parser.add_argument('-i', '--instance', help='Instance to encrypt volume on.', required=True)
     parser.add_argument('-k', '--kms_key_id', help='KMS key', required=True)
+    parser.add_argument('-p', '--preserve_volumes', help='Preserve original volumes',
+                        required=False, action='store_false')
     args = parser.parse_args()
 
     """ Set up AWS Session + Client + Resources + Waiters """
@@ -258,10 +260,13 @@ def main(argv):
         """ Step 7: Clean up """
         print('---Clean up resources')
         for cleanup in volume_data:
-            print('---Remove snapshot {}'.format(cleanup['snapshot'].id))
+            print('---Delete snapshot {}'.format(cleanup['snapshot'].id))
             cleanup['snapshot'].delete()
-            print('---Remove original volume {}'.format(cleanup['volume'].id))
-            cleanup['volume'].delete()
+            if not args.preserve_volumes:
+                print('---Skipping deletion of original volume {}'.format(cleanup['volume'].id))
+            else:
+                print('---Delete original volume {}'.format(cleanup['volume'].id))
+                cleanup['volume'].delete()
 
     print('Encryption finished')
 
