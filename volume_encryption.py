@@ -200,10 +200,10 @@ def main(argv):
                 VolumeType=volume.volume_type,
             )
 
-        # Add original tags to new volume
+        # Add original tags but skip aws: tags since they cannot be applied
         if volume.tags:
-            volume_encrypted.create_tags(Tags=[t for t in volume.tags if not t.get(
-                'Key').startswith('VolumeEncryptionMetadata:')])
+            volume_encrypted.create_tags(Tags=[t for t in volume.tags if not t.get('Key').startswith(
+                'aws:') and not t.get('Key').startswith('VolumeEncryptionMetadata:')])
 
         # Add additional metadata tags to original volumes for traceability
         metadata_tags = [
