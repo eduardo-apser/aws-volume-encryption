@@ -133,16 +133,19 @@ def main(argv):
 
         """ Step 1: Prepare instance """
 
+        # Get instance state and store it in a variable
+        instance_state = instance.state['Code']
+        
         # Exit if instance is pending, shutting-down, or terminated
         instance_exit_states = [0, 32, 48]
-        if instance.state['Code'] in instance_exit_states:
+        if instance_state in instance_exit_states:
             sys.exit(
                 'ERROR: Instance is {} please make sure this instance is active.'
                 .format(instance.state['Name'])
             )
 
         # Validate successful shutdown if it is running or stopping
-        if instance.state['Code'] == 16:
+        if instance_state == 16:
             print('[{}] Stopping instance {}'.format(datetime.now().astimezone().isoformat(), instance_id))
             instance.stop()
 
@@ -271,16 +274,17 @@ def main(argv):
 
     if has_volumes_to_encrypt:
         """ Step 6: Start instance """
-        print('[{}] Start instance {}'.format(datetime.now().astimezone().isoformat(), instance.id))
-        instance.start()
-        try:
-            waiter_instance_running.wait(
-                InstanceIds=[
-                    instance_id,
-                ]
-            )
-        except botocore.exceptions.WaiterError as e:
-            sys.exit('ERROR: {}'.format(e))
+        if instance_state == 16:
+            print('[{}] Start instance {}'.format(datetime.now().astimezone().isoformat(), instance.id))
+            instance.start()
+            try:
+                waiter_instance_running.wait(
+                    InstanceIds=[
+                        instance_id,
+                    ]
+                )
+            except botocore.exceptions.WaiterError as e:
+                sys.exit('ERROR: {}'.format(e))
 
         """ Step 7: Clean up """
         print('[{}] Clean up resources'.format(datetime.now().astimezone().isoformat()))
