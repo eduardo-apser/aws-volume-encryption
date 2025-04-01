@@ -219,13 +219,14 @@ def main(argv):
                 'Value': instance_id
             }
         ]
-        for t in instance.tags:
-            if t['Key'] == 'Name':
-                metadata_tags.append({
-                    'Key': 'VolumeEncryptionMetadata:InstanceName',
-                    'Value': t['Value']
-                })
-                break
+        if instance.tags:  # Check if instance has any tags
+            for t in instance.tags:
+                if t['Key'] == 'Name':
+                    metadata_tags.append({
+                        'Key': 'VolumeEncryptionMetadata:InstanceName',
+                        'Value': t['Value']
+                    })
+                    break
         volume.create_tags(Tags=metadata_tags)
 
         """ Step 4: Detach current volume """
